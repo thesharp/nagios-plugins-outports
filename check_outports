@@ -1,0 +1,80 @@
+#!/usr/bin/env python
+
+import subprocess
+import re
+import sys
+from optparse import OptionParser
+
+
+def get_interfaces():
+    interfaces = []
+    command = subprocess.Popen("ip a", shell=True, stdout=subprocess.PIPE)
+    ip_a = command.communicate()[0].split("\n")
+    for line in ip_a:
+        if re.match(".*inet .*", line):
+            ip = line.split()[1].split("/")[0]
+            interfaces.append(ip)
+    return interfaces
+
+
+def get_portrange():
+    command = subprocess.Popen("sysctl net.ipv4.ip_local_port_range", shell=True,
+                               stdout=subprocess.PIPE)
+    portrange = command.communicate()[0].split("=")[1].strip().split()
+    total = int(portrange[1]) - int(portrange[0])
+    return (portrange[0], portrange[1], total)
+
+
+def get_metrics():
+    outports = {}
+    interfaces = get_interfaces()
+    portrange = get_portrange()
+    for interface in interfaces:
+        outports[interface] = 0
+    command = subprocess.Popen("netstat -nt", shell=True, stdout=subprocess.PIPE)
+    netstat = command.communicate()[0].split("\n")
+    for line in netstat:
+        if line.startswith("tcp"):
+            source = line.split()[3].split(":")
+            interface = source[0]
+            port = source[1]
+            if port >= portrange[0] and port <= portrange[1]:
+                outports[interface] += 1
+    outports_free = {}
+    for outport in outports:
+        outports_free[outport] = int(1.0 * (portrange[2] - outports[outport]) / portrange[2] * 100)
+    return outports_free
+
+
+def main():
+    parser = OptionParser()
+    parser.add_option("-w", "--warning", action="store", dest="warning", type="int",
+                      help="warning treshold in percents")
+    parser.add_option("-c", "--critical", action="store", dest="critical", type="int",
+                      help="critical treshold in percents")
+    (options, args) = parser.parse_args()
+
+    if not options.warning or not options.critical:
+        print "Specify tresholds. See --help"
+        sys.exit(3)
+
+    metrics = get_metrics()
+    statuses = {"0": "OK",
+                "1": "WARNING",
+                "2": "CRITICAL",
+                "3": "UNKNOWN"}
+    status = 0
+    message = []
+
+    for metric in metrics:
+        message.append("%s: %s%% free" % (metric, metrics[metric]))
+        if metrics[metric] <= options.critical:
+            status = 2
+        elif metrics[metric] <= options.warning and metrics[metric] > options.critical and status != 2:
+            status = 1
+
+    print "CHECK_OUTPORTS %s: %s" % (statuses[str(status)], ", ".join(message))
+    sys.exit(status)
+
+if __name__ == '__main__':
+    main()
